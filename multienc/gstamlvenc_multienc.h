@@ -21,6 +21,8 @@
 #endif
 //#include <vp_multi_codec_1_0.h>
 
+#define PTS_UINT_4_RESET 4294967295
+
 G_BEGIN_DECLS
 
 #define GST_TYPE_AMLVENC \
@@ -69,6 +71,8 @@ struct _GstAmlVEnc
   guint min_buffers;
   guint max_buffers;
   guint encoder_bufsize;
+  guint u4_first_pts_index;
+  gboolean b_enable_dmallocator;
 
   struct roi_info {
     guint srcid;

@@ -109,6 +109,7 @@ enum
   PROP_ROI_X,
   PROP_ROI_Y,
   PROP_ROI_QUALITY,
+  PROD_ENABLE_DMALLOCATOR
 };
 
 struct aml_roi_location {
@@ -446,6 +447,11 @@ gst_amlvenc_class_init (GstAmlVEncClass * klass)
           0, 51, PROP_ROI_QUALITY_DEFAULT,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROD_ENABLE_DMALLOCATOR,
+      g_param_spec_boolean ("enable-dmallocator", "enable-dmallocator", "Enable/Disable dmallocator",
+          FALSE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gst_element_class_set_static_metadata (element_class,
     "Amlogic h264/h265 Multi-Encoder",
     "Codec/Encoder/Video",
@@ -490,6 +496,9 @@ gst_amlvenc_init (GstAmlVEnc * encoder)
   encoder->roi.enabled = PROP_ROI_ENABLED_DEFAULT;
   encoder->roi.id = PROP_ROI_ID_DEFAULT;
   encoder->roi.buffer_info.data = NULL;
+
+  encoder->u4_first_pts_index = 0;
+  encoder->b_enable_dmallocator = FALSE;
 }
 
 static void
@@ -1020,6 +1029,29 @@ gst_amlvenc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
     gst_query_add_allocation_pool (query, NULL, info->size, self->min_buffers, self->max_buffers);
   }
 
+ if (self->b_enable_dmallocator) {
+    GstAllocator *allocator = NULL;
+    GstAllocationParams params;
+    /* we got configuration from our peer or the decide_allocation method,
+     * parse them */
+    if (gst_query_get_n_allocation_params (query) > 0) {
+       gst_query_parse_nth_allocation_param (query, 0, &allocator, &params);
+    } else {
+      allocator = NULL;
+      gst_allocation_params_init (&params);
+    }
+
+    /* For the camera + jpegdec + encoder case,jpegdec use videobuffer pool which is software allocate.
+    caused cp memory to dmabuffer during encoder frame.
+    currently,provide the dmaallocator to upstreamer element to avoid copy(optimize)
+    Try to update allocator*/
+    if (self->dmabuf_alloc)
+      gst_query_add_allocation_param (query, self->dmabuf_alloc, &params);
+
+    if (allocator)
+      gst_object_unref (allocator);
+  }
+
   return GST_VIDEO_ENCODER_CLASS (parent_class)->propose_allocation (encoder,
       query);
 }
@@ -1079,6 +1111,7 @@ gst_amlvenc_encode_frame (GstAmlVEnc * encoder,
   gboolean is_dmabuf = gst_is_dmabuf_memory(memory);
   gint fd = -1;
   GstMapInfo minfo;
+  GST_LOG_OBJECT(encoder, "is_dmabuf[%d]",is_dmabuf);
 
   if (is_dmabuf) {
     fd = gst_dmabuf_memory_get_fd(memory);
@@ -1090,7 +1123,7 @@ gst_amlvenc_encode_frame (GstAmlVEnc * encoder,
       encoder->imgproc.input.memory =
         gst_allocator_alloc(encoder->dmabuf_alloc, info->size, NULL);
       if (encoder->imgproc.input.memory == NULL) {
-        GST_DEBUG(encoder, "failed to allocate new dma buffer");
+        GST_DEBUG_OBJECT(encoder, "failed to allocate new dma buffer");
         return GST_FLOW_ERROR;
       }
       encoder->imgproc.input.fd = gst_dmabuf_memory_get_fd(encoder->imgproc.input.memory);
@@ -1185,6 +1218,24 @@ gst_amlvenc_encode_frame (GstAmlVEnc * encoder,
   memcpy (map.data, encoder->codec.buf, meta.encoded_data_length_in_bytes);
   gst_buffer_unmap (frame->output_buffer, &map);
 
+  /*
+  During encoder raw yuv file,and frame have no pts.
+  so need fill it in order to avoid mux plugin fail.
+  */
+  if ((GST_CLOCK_TIME_NONE == GST_BUFFER_TIMESTAMP (frame->input_buffer))
+      && info->fps_n && info->fps_d) {
+      GST_LOG_OBJECT (encoder, "add for add pts end[%d] [%d]",info->fps_n,info->fps_d);
+      GST_BUFFER_TIMESTAMP (frame->input_buffer) = gst_util_uint64_scale (encoder->u4_first_pts_index++, GST_SECOND, info->fps_n/info->fps_d);
+      GST_BUFFER_DURATION (frame->input_buffer) = gst_util_uint64_scale (1, GST_SECOND, info->fps_n/info->fps_d);
+      frame->pts = GST_BUFFER_TIMESTAMP (frame->input_buffer);
+
+      //FIXME later for first_pts_index
+      if (encoder->u4_first_pts_index == PTS_UINT_4_RESET) {
+          GST_DEBUG_OBJECT (encoder, "PTS rollback");
+          encoder->u4_first_pts_index = 0;
+      }
+  }
+
   frame->dts = frame->pts;
 
   GST_LOG_OBJECT (encoder,
@@ -1254,6 +1305,9 @@ gst_amlvenc_get_property (GObject * object, guint prop_id,
       struct RoiParamInfo *param_info = retrieve_roi_param_info(encoder, encoder->roi.id);
       g_value_set_int (value, param_info->quality);
     } break;
+    case PROD_ENABLE_DMALLOCATOR:
+      g_value_set_boolean (value, encoder->b_enable_dmallocator);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -1332,6 +1386,11 @@ gst_amlvenc_set_property (GObject * object, guint prop_id,
         roi_set_flag = true;
       }
     } break;
+    case PROD_ENABLE_DMALLOCATOR: {
+      gboolean enabled = g_value_get_boolean (value);
+      encoder->b_enable_dmallocator = enabled;
+      break;
+    }
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
