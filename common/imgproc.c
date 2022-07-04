@@ -4,13 +4,15 @@
  * All information contained herein is Amlogic confidential.
  *
  */
-#include <aml_ge2d.h>
+//#include <aml_ge2d.h>
 #include <gst/gst.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include "imgproc.h"
+
+#include "aml_ge2d.h"
 
 struct frinfo {
   aml_ge2d_t ge2d;

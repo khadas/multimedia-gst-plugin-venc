@@ -5,7 +5,11 @@
 
 TARGET = libgstamlvenc.so
 
+
+LOCAL_PATH := $(shell pwd)
 SRCS = $(wildcard *.c)
+SRCS += $(wildcard $(LOCAL_PATH)/../common/*.c)
+
 OBJS = $(patsubst %c, %o, $(SRCS))
 
 CFLAGS = -Wall -Wextra -fPIC
@@ -14,7 +18,8 @@ LDFLAGS += $(shell $(PKG_CONFIG) --libs gstreamer-1.0 gstreamer-base-1.0 gstream
 
 LDFLAGS += -L$(STAGING_DIR)/usr/lib/ -lion -lvpcodec
 CFLAGS += \
-	-I$(STAGING_DIR)/usr/include/
+	-I$(STAGING_DIR)/usr/include/ \
+    -I$(LOCAL_PATH)/../common/
 
 
 # build
