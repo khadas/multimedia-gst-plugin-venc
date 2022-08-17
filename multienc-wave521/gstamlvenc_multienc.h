@@ -65,6 +65,7 @@ struct _GstAmlVEnc
   GstAllocator *dmabuf_alloc;
 
   /* properties */
+  gint fd[3];
   gint gop;
   gint framerate;
   guint bitrate;
