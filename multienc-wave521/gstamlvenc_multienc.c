@@ -1183,7 +1183,7 @@ gst_amlvenc_encode_frame (GstAmlVEnc * encoder,
     }
 
     struct imgproc_buf inbuf, outbuf;
-    inbuf.fd = fd;
+    inbuf.fd = encoder->fd[0];
     inbuf.is_ionbuf = gst_is_amlionbuf_memory(memory);
 
     if (encoder->imgproc.output.memory == NULL) {
