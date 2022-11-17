@@ -2,67 +2,36 @@
  *
  * ## Example launch line
  * |[
- *  gst-launch-1.0 -v v4l2src device=/dev/video0 io-mode=mmap num-buffers=1 ! video/x-raw,format=YUY2,width=640,height=480 ! amljpegenc ! filesink location=/media/1.jpg
- * ]|
- *
+ * gst-launch-1.0 videotestsrc num-buffers=50 ! video/x-raw, framerate='(fraction)'5/1 ! jpegenc ! avimux ! filesink location=mjpeg.avi
+ * ]| a pipeline to mux 5 JPEG frames per second into a 10 sec. long motion jpeg
+ * avi.
  *
  */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-#include <gst/allocators/gstdmabuf.h>
+#include <string.h>
+
 #include <gst/gst.h>
+//#include "gstjpeg.h"
 #include "gstamljpegenc.h"
+//#include "gstjpegelements.h"
 #include <gst/video/video.h>
 #include <gst/video/gstvideometa.h>
 #include <gst/base/base.h>
-#include <gst/allocators/gstdmabuf.h>
-#include "../common/gstamlionallocator.h"
-#include "imgproc.h"
 
-#define PROP_IDR_PERIOD_DEFAULT 30
-#define PROP_FRAMERATE_DEFAULT 30
-#define PROP_BITRATE_DEFAULT 2000
-#define PROP_BITRATE_MAX 12000
-#define PROP_MIN_BUFFERS_DEFAULT 2
-#define PROP_MAX_BUFFERS_DEFAULT 6
-#define PROP_ENCODER_BUFFER_SIZE_DEFAULT 2048
-#define PROP_ENCODER_BUFFER_SIZE_MIN 1024
-#define PROP_ENCODER_BUFFER_SIZE_MAX 4096
-#define PROP_ROI_ID_DEFAULT 0
-#define PROP_ROI_ENABLED_DEFAULT TRUE
-#define PROP_ROI_WIDTH_DEFAULT 0.00
-#define PROP_ROI_HEIGHT_DEFAULT 0.00
-#define PROP_ROI_X_DEFAULT 0.00
-#define PROP_ROI_Y_DEFAULT 0.00
-#define PROP_ROI_QUALITY_DEFAULT 50
-
-enum
-{
-  PROP_0,
-  PROP_GOP,
-  PROP_FRAMERATE,
-  PROP_BITRATE,
-  PROP_MIN_BUFFERS,
-  PROP_MAX_BUFFERS,
-  PROP_ENCODER_BUFSIZE,
-  PROP_ROI_ID,
-  PROP_ROI_ENABLED,
-  PROP_ROI_WIDTH,
-  PROP_ROI_HEIGHT,
-  PROP_ROI_X,
-  PROP_ROI_Y,
-  PROP_ROI_QUALITY,
-  PROD_ENABLE_DMALLOCATOR
-};
+/* experimental */
+/* setting smoothig seems to have no effect in libjepeg
+#define ENABLE_SMOOTHING 1
+*/
 
 GST_DEBUG_CATEGORY_STATIC (amljpegenc_debug);
 #define GST_CAT_DEFAULT amljpegenc_debug
-#define JPEG_DEFAULT_QUALITY 50
+
+#define JPEG_DEFAULT_QUALITY 85
 #define JPEG_DEFAULT_SMOOTHING 0
 #define JPEG_DEFAULT_SNAPSHOT		FALSE
-#define ALIGNE_64(a) (((a + 63) >> 6) << 6)
 
 /* JpegEnc signals and args */
 enum
@@ -73,28 +42,25 @@ enum
 
 enum
 {
-  /*PROP_0,*/
+  PROP_0,
   PROP_QUALITY,
   PROP_SMOOTHING,
   PROP_SNAPSHOT
 };
 
 static void gst_amljpegenc_finalize (GObject * object);
+
 static void gst_amljpegenc_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec);
 static void gst_amljpegenc_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec);
-static void gst_amljpegenc_close_encoder (GstAmlJpegEnc * encoder);
-static gboolean gst_amljpegenc_start (GstAmlJpegEnc * encoder);
-static gboolean gst_amljpegenc_stop (GstAmlJpegEnc * encoder);
-static gboolean gst_amljpegenc_init_encoder (GstAmlJpegEnc * encoder);
+
+static gboolean gst_amljpegenc_start (GstVideoEncoder * benc);
+static gboolean gst_amljpegenc_stop (GstVideoEncoder * benc);
 static gboolean gst_amljpegenc_set_format (GstVideoEncoder * encoder,
     GstVideoCodecState * state);
-static gboolean gst_amljpegenc_set_src_caps (GstAmlJpegEnc * encoder, GstCaps * caps);
 static GstFlowReturn gst_amljpegenc_handle_frame (GstVideoEncoder * encoder,
     GstVideoCodecFrame * frame);
-static GstFlowReturn gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
-    GstVideoCodecFrame * frame);/* add */
 static gboolean gst_amljpegenc_propose_allocation (GstVideoEncoder * encoder,
     GstQuery * query);
 
@@ -112,8 +78,8 @@ GST_STATIC_PAD_TEMPLATE ("sink",
         ("{ I420, YV12, YUY2, UYVY, Y41B, Y42B, YVYU, Y444, NV21, "
          "NV12, RGB, BGR, RGBx, xRGB, BGRx, xBGR, GRAY8 }"))
     );
-
 /* *INDENT-ON* */
+
 static GstStaticPadTemplate gst_amljpegenc_src_pad_template =
 GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
@@ -187,345 +153,45 @@ gst_amljpegenc_class_init (GstAmlJpegEncClass * klass)
       "JPEG encoding element");
 }
 
-/* initialize parameter */
 static void
-gst_amljpegenc_init (GstAmlJpegEnc * encoder)
+gst_amljpegenc_init (GstAmlJpegEnc * jpegenc)
 {
-  GST_PAD_SET_ACCEPT_TEMPLATE (GST_VIDEO_ENCODER_SINK_PAD (encoder));
-  encoder->width = PROP_ROI_WIDTH_DEFAULT;
-  encoder->height = PROP_ROI_HEIGHT_DEFAULT;
-  encoder->quality = 50;
-  encoder->smoothing = JPEG_DEFAULT_SMOOTHING;
-  encoder->snapshot = JPEG_DEFAULT_SNAPSHOT;
-  encoder->handle = 0;
-  encoder->encoder_bufsize = PROP_ENCODER_BUFFER_SIZE_DEFAULT * 1024;
-}
+  GST_PAD_SET_ACCEPT_TEMPLATE (GST_VIDEO_ENCODER_SINK_PAD (jpegenc));
 
-/* gst_amljpegenc_close_encoder
- * @encoder:  Encoder which should close.
- *
- * Close jpegenc encoder.
- */
-static void
-gst_amljpegenc_close_encoder (GstAmlJpegEnc * encoder)
-{
-  GST_DEBUG_OBJECT (encoder, "enter close encoder");
-  if (encoder->handle != 0) {
-    jpegenc_destroy(encoder->handle);
-    encoder->handle = 0;
-  }
-
-  if (encoder->imgproc.handle) {
-    imgproc_deinit(encoder->imgproc.handle);
-    encoder->imgproc.handle = NULL;
-  }
-
-}
-
-/*
- * gst_amljpegenc_init_encoder
- * @encoder:  Encoder which should be initialized.
- *
- * Initialize jpegenc encoder.
- *
- */
-static gboolean
-gst_amljpegenc_init_encoder (GstAmlJpegEnc * encoder)
-{
-  GstVideoInfo *info;
-  if (!encoder->input_state) {
-    return FALSE;
-  }
-
-  info = &encoder->input_state->info;
-  gst_amljpegenc_close_encoder (encoder);
-  encoder->width = info->width;
-  encoder->height = info->height;
-  encoder->handle = jpegenc_init();
-
-  if (encoder->handle == 0) {
-    GST_ELEMENT_ERROR (encoder, STREAM, ENCODE,
-        ("Can not initialize v encoder."), (NULL));
-    return FALSE;
-  }
-  return TRUE;
+  /* init properties */
+  jpegenc->quality = JPEG_DEFAULT_QUALITY;
+  jpegenc->smoothing = JPEG_DEFAULT_SMOOTHING;
+  jpegenc->snapshot = JPEG_DEFAULT_SNAPSHOT;
 }
 
 static void
 gst_amljpegenc_finalize (GObject * object)
 {
   GstAmlJpegEnc *filter = GST_AMLJPEGENC (object);
+
   if (filter->input_state)
     gst_video_codec_state_unref (filter->input_state);
+
   G_OBJECT_CLASS (parent_class)->finalize (object);
 }
 
 static gboolean
-gst_amljpegenc_set_format (GstVideoEncoder * video_enc,
-    GstVideoCodecState * state)
+gst_amljpegenc_set_format (GstVideoEncoder * encoder, GstVideoCodecState * state)
 {
-  GstAmlJpegEnc *encoder = GST_AMLJPEGENC (video_enc);
-  GstVideoInfo *info = &state->info;
-  GstCaps *template_caps;
-  GstCaps *allowed_caps = NULL;
-  const gchar* allowed_mime_name = NULL;
-
-  if (encoder->handle != 0) {
-    GstVideoInfo *old = &encoder->input_state->info;
-    if (info->finfo->format == old->finfo->format
-        && info->width == old->width && info->height == old->height
-        && info->fps_n == old->fps_n && info->fps_d == old->fps_d
-        && info->par_n == old->par_n && info->par_d == old->par_d) {
-      gst_video_codec_state_unref (encoder->input_state);
-      encoder->input_state = gst_video_codec_state_ref (state);
-      return TRUE;
-    }
-  }
-
-  if (encoder->input_state)
-     gst_video_codec_state_unref (encoder->input_state);
-   encoder->input_state = gst_video_codec_state_ref (state);
-
-  if (!gst_amljpegenc_set_src_caps (encoder, state->caps)) {
-     gst_amljpegenc_close_encoder (encoder);
-     return FALSE;
-   }
-
-  /* If the encoder is initialized, do not reinitialize it again if not
-   * necessary */
-  if (!gst_amljpegenc_init_encoder (encoder))  {
-     GST_DEBUG_OBJECT (encoder, "not init encoder");
-     return FALSE;
-   }
-     return TRUE;
+    return TRUE;
 }
 
-/* gst_amljpegenc_set_src_caps
- * Returns: TRUE on success.
- */
-static gboolean
-gst_amljpegenc_set_src_caps (GstAmlJpegEnc * encoder, GstCaps * caps)
-{
-  GstCaps *outcaps;
-  GstStructure *structure;
-  GstVideoCodecState *state;
-  GstTagList *tags;
-  const gchar* mime_str = "image/jpeg";
-  outcaps = gst_caps_new_empty_simple (mime_str);
-  state = gst_video_encoder_set_output_state (GST_VIDEO_ENCODER (encoder),
-      outcaps, encoder->input_state);
-  GST_DEBUG_OBJECT (encoder, "output caps: %" GST_PTR_FORMAT, state->caps);
-  gst_video_codec_state_unref (state);
-  return TRUE;
-}
-
-/* chain function
- * this function does the actual processing
- */
 static GstFlowReturn
-gst_amljpegenc_handle_frame (GstVideoEncoder * video_enc,
-    GstVideoCodecFrame * frame)
+gst_amljpegenc_handle_frame (GstVideoEncoder * encoder, GstVideoCodecFrame * frame)
 {
-  GstAmlJpegEnc *encoder = GST_AMLJPEGENC (video_enc);
-  GstFlowReturn ret;
-
-  if (G_UNLIKELY (encoder->handle == 0))
-    goto not_inited;
-
-  ret = gst_amljpegenc_encode_frame (encoder, frame);
-  return ret;
-
-not_inited:
-  {
-    GST_WARNING_OBJECT (encoder, "Got buffer before set_caps was called");
     return GST_FLOW_OK;
-  }
-}
-
-static GstFlowReturn
-gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
-    GstVideoCodecFrame * frame)
-{
-  GstVideoInfo *info = &encoder->input_state->info;
-  GstMapInfo map;
-  gint encode_data_len = -1;
-  int inbuf_info;
-  int retbuf_info;
-  int w_stride = (info->width % 8) == 0 ? info->width : (((info->width / 8)+1)*8);
-  int h_stride = (info->height % 8) == 0 ? info->height : (((info->height / 8)+1)*8);
-
-  if (G_UNLIKELY (encoder->handle == 0)) {
-    if (frame)
-      gst_video_codec_frame_unref (frame);
-    return GST_FLOW_NOT_NEGOTIATED;
-  }
-
-  if (frame) {
-    if (GST_VIDEO_CODEC_FRAME_IS_FORCE_KEYFRAME (frame)) {
-      GST_INFO_OBJECT (encoder, "Forcing key frame");
-    }
-  }
-
-  GstMemory *memory = gst_buffer_get_memory(frame->input_buffer, 0);
-  gboolean is_dmabuf = gst_is_dmabuf_memory(memory);
-  gint fd = -1;
-  GstMapInfo minfo;
-  GstVideoFrame video_frame;
-  guint8 *pixel = 1;
-  gint mem_type = JPEGENC_DMA_BUFF;
-  gint iformat = FMT_YUV420 ;
-  iformat = GST_VIDEO_INFO_FORMAT(info);
-  GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
- /* match the iformat */
-  switch ( GST_VIDEO_INFO_FORMAT(info) ) {
-    case GST_VIDEO_FORMAT_RGB || GST_VIDEO_FORMAT_BGR:
-    /*
-     For the rgb format,need convert to NV12 via ge2d.
-     new imageproc handle when RGB case.
-  */
-        encoder->imgproc.handle = imgproc_init();
-    if (encoder->imgproc.handle == NULL) {
-        GST_ELEMENT_ERROR (encoder, STREAM, ENCODE,
-          ("Can not initialize imgproc."), (NULL));
-      return FALSE;
-    }
-        encoder->imgproc.outbuf_size = (info->width * info->height * 3) / 2;
-        GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-        break;
-
-    case GST_VIDEO_FORMAT_NV12:
-        iformat = FMT_NV12 ;
-        GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-        break;
-
-    case GST_VIDEO_FORMAT_NV21:
-        iformat = FMT_NV21 ;
-        GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-        break;
-
-    case GST_VIDEO_FORMAT_YUY2:
-        iformat = FMT_YUV422_SINGLE ;
-        GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-        break;
-
-    default:
-        GST_DEBUG_OBJECT (encoder, "no NV12/YUY2/RGB/BGR iformat");
-        break;
-   }
-
-  if (is_dmabuf) {
-    fd = gst_dmabuf_memory_get_fd(memory);
-    mem_type = JPEGENC_DMA_BUFF;
-    GST_DEBUG_OBJECT (encoder,"mem_type=%d",mem_type);
-    gst_memory_unref(memory);
-  }  else {
-    mem_type = JPEGENC_LOCAL_BUFF;
-    GST_DEBUG_OBJECT (encoder,"mem_type=%d",mem_type);
-    gst_memory_unref(memory);
-    /*
-      non dmabuf case,due to encoder driver only handle dmabuf,so need convert to dma buffer case below.
-     */
-    if (encoder->imgproc.input.memory == NULL) {
-      encoder->imgproc.input.memory =
-        gst_allocator_alloc(encoder->dmabuf_alloc, info->size, NULL);
-
-      if (encoder->imgproc.input.memory == NULL) {
-        return GST_FLOW_ERROR;
-      }
-      encoder->imgproc.input.fd = gst_dmabuf_memory_get_fd(encoder->imgproc.input.memory);
-    }
-
-    memory = encoder->imgproc.input.memory;
-    fd = encoder->imgproc.input.fd;
-    if (gst_memory_map(memory, &minfo, GST_MAP_WRITE)) {
-      GstVideoFrame video_frame;
-      gst_video_frame_map(&video_frame, info, frame->input_buffer, GST_MAP_READ);
-      pixel = GST_VIDEO_FRAME_PLANE_DATA (&video_frame, 0);
-      memcpy(minfo.data, pixel, info->size);
-      gst_video_frame_unmap (&video_frame);
-      gst_memory_unmap(memory, &minfo);
-    }
-  }
-
-  if (encoder->imgproc.handle) {
-    // format conversation needed
-    if (encoder->dmabuf_alloc == NULL) {
-      encoder->dmabuf_alloc = gst_amlion_allocator_obtain();
-    }
-
-    struct imgproc_buf inbuf, outbuf;
-    inbuf.fd = fd;
-    inbuf.is_ionbuf = gst_is_amlionbuf_memory(memory);
-
-    if (encoder->imgproc.output.memory == NULL) {
-      encoder->imgproc.output.memory = gst_allocator_alloc(
-          encoder->dmabuf_alloc, encoder->imgproc.outbuf_size, NULL);
-      if (encoder->imgproc.output.memory == NULL) {
-        return GST_FLOW_ERROR;
-      }
-      encoder->imgproc.output.fd = gst_dmabuf_memory_get_fd(encoder->imgproc.output.memory);
-    }
-
-    fd = encoder->imgproc.output.fd;
-    outbuf.fd = fd;
-    outbuf.is_ionbuf = TRUE;
-    struct imgproc_pos inpos = {
-        0, 0, info->width, info->height, info->width, info->height};
-    struct imgproc_pos outpos = {
-        0, 0, info->width, info->height, info->width, info->height};
-
-    imgproc_crop(encoder->imgproc.handle, inbuf, inpos,
-                      GST_VIDEO_INFO_FORMAT(info), outbuf, outpos,
-                      GST_VIDEO_FORMAT_NV12);
-  }
-    /*
-      if want to see the parameters,please release the log.
-     */
-
-  int ret = jpegenc_encode(encoder->handle, info->width, info->height, w_stride, h_stride, encoder->quality, iformat, 0, mem_type, fd, pixel, encoder->outputbuf);
-
-  if (0 == ret) {
-    if (frame) {
-      GST_ELEMENT_ERROR (encoder, STREAM, ENCODE, ("Encode v frame failed."),
-          ("gst_amlvencoder_encode return code=%d", encode_data_len));
-      gst_video_codec_frame_unref (frame);
-      return GST_FLOW_ERROR;
-    } else {
-      return GST_FLOW_EOS;
-    }
-  }
-
-  if (frame) {
-    gst_video_codec_frame_unref (frame);
-  }
-
-  //frame = gst_video_encoder_get_frame (GST_VIDEO_ENCODER (encoder), input_frame->system_frame_number);
-  frame = gst_video_encoder_get_oldest_frame (GST_VIDEO_ENCODER (encoder));
-  if (!frame) {
-    gst_video_codec_frame_unref (frame);
-    return GST_FLOW_ERROR;
-  }
-
-  frame->output_buffer = gst_video_encoder_allocate_output_buffer(
-      GST_VIDEO_ENCODER(encoder), ret);
-  gst_buffer_map(frame->output_buffer, &map, GST_MAP_WRITE);
-  memcpy (map.data, encoder->outputbuf, ret);
-  gst_buffer_unmap (frame->output_buffer, &map);
-
-  frame->dts = frame->pts;
-
-  GST_DEBUG_OBJECT (encoder,
-      "output: dts %" G_GINT64_FORMAT " pts %" G_GINT64_FORMAT,
-      (gint64) frame->dts, (gint64) frame->pts);
-
-  GST_DEBUG_OBJECT (encoder, "Output keyframe");
-  GST_VIDEO_CODEC_FRAME_SET_SYNC_POINT (frame);
-    return gst_video_encoder_finish_frame ( GST_VIDEO_ENCODER(encoder), frame);
 }
 
 static gboolean
 gst_amljpegenc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
 {
+  gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
+
   return GST_VIDEO_ENCODER_CLASS (parent_class)->propose_allocation (encoder,
       query);
 }
@@ -587,41 +253,28 @@ gst_amljpegenc_get_property (GObject * object, guint prop_id, GValue * value,
 }
 
 static gboolean
-gst_amljpegenc_start (GstAmlJpegEnc * encoder)
+gst_amljpegenc_start (GstVideoEncoder * benc)
 {
-  GstAmlJpegEnc *enc = (GstAmlJpegEnc *) encoder;
+  GstAmlJpegEnc *enc = (GstAmlJpegEnc *) benc;
 
-  enc->dmabuf_alloc = gst_amlion_allocator_obtain();
+  enc->line[0] = NULL;
+  enc->line[1] = NULL;
+  enc->line[2] = NULL;
+  enc->sof_marker = -1;
 
-  GST_DEBUG_OBJECT(encoder, "malloc out_buf");
-
-if (enc->outputbuf == NULL) {
-    enc->outputbuf = g_new (guchar, enc->encoder_bufsize);
-  }
-  enc->imgproc.input.memory = NULL;
-  enc->imgproc.output.memory = NULL;
-  /* make sure that we have enough time for first DTS,
-     this is probably overkill for most streams */
-  gst_video_encoder_set_min_pts (encoder, GST_MSECOND * 30);
-
-  GST_DEBUG_OBJECT(encoder, "malloc out_buf ok");
   return TRUE;
 }
 
 static gboolean
-gst_amljpegenc_stop (GstAmlJpegEnc * encoder)
+gst_amljpegenc_stop (GstVideoEncoder * benc)
 {
-  GstAmlJpegEnc *enc = (GstAmlJpegEnc *) encoder;
-
- if (enc->outputbuf) {
-    g_free((gpointer)enc->outputbuf);
-    enc->outputbuf = NULL;
-  }
-
-  if (enc->dmabuf_alloc) {
-    gst_object_unref(enc->dmabuf_alloc);
-    enc->dmabuf_alloc = NULL;
-  }
+  GstAmlJpegEnc *enc = (GstAmlJpegEnc *) benc;
+  g_free (enc->line[0]);
+  g_free (enc->line[1]);
+  g_free (enc->line[2]);
+  enc->line[0] = NULL;
+  enc->line[1] = NULL;
+  enc->line[2] = NULL;
 
   return TRUE;
 }
