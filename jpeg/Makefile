@@ -5,17 +5,22 @@
 
 TARGET = libgstamljpegenc.so
 
+
+LOCAL_PATH := $(shell pwd)
 SRCS = $(wildcard *.c)
+SRCS += $(wildcard $(LOCAL_PATH)/../common/*.c)
+
 OBJS = $(patsubst %c, %o, $(SRCS))
 
 CFLAGS = -Wall -Wextra -fPIC
 CFLAGS += $(shell $(PKG_CONFIG) --cflags gstreamer-1.0 gstreamer-base-1.0 gstreamer-allocators-1.0 gstreamer-video-1.0)
 LDFLAGS += $(shell $(PKG_CONFIG) --libs gstreamer-1.0 gstreamer-base-1.0 gstreamer-allocators-1.0 gstreamer-video-1.0)
 
-LDFLAGS += -L$(STAGING_DIR)/usr/lib/ -ljpegenc_api
-CFLAGS += \
-	-I$(STAGING_DIR)/usr/include/
+LDFLAGS += -L$(STAGING_DIR)/usr/lib/ -ljpegenc_api -lion -lge2d
 
+CFLAGS += \
+	-I$(STAGING_DIR)/usr/include/ \
+    -I$(LOCAL_PATH)/../common/
 
 # build
 all: $(TARGET)
