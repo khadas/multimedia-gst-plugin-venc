@@ -141,6 +141,11 @@ gst_amljpegenc_class_init (GstAmlJpegEncClass * klass)
   gobject_class->finalize = gst_amljpegenc_finalize;
   gobject_class->set_property = gst_amljpegenc_set_property;
   gobject_class->get_property = gst_amljpegenc_get_property;
+  venc_class->start = gst_amljpegenc_start;
+  venc_class->stop = gst_amljpegenc_stop;
+  venc_class->set_format = gst_amljpegenc_set_format;
+  venc_class->handle_frame = gst_amljpegenc_handle_frame;
+  venc_class->propose_allocation = gst_amljpegenc_propose_allocation;
 
   g_object_class_install_property (gobject_class, PROP_QUALITY,
       g_param_spec_int ("quality", "Quality", "Quality of encoding",
@@ -177,11 +182,6 @@ gst_amljpegenc_class_init (GstAmlJpegEncClass * klass)
       "Codec/Encoder/Image", "Encode images in JPEG format",
       "Xiaobo.Wang@amlogic.com");
 
-  venc_class->start = gst_amljpegenc_start;
-  venc_class->stop = gst_amljpegenc_stop;
-  venc_class->set_format = gst_amljpegenc_set_format;
-  venc_class->handle_frame = gst_amljpegenc_handle_frame;
-  venc_class->propose_allocation = gst_amljpegenc_propose_allocation;
 
   GST_DEBUG_CATEGORY_INIT (amljpegenc_debug, "jpegenc", 0,
       "JPEG encoding element");
@@ -266,9 +266,6 @@ gst_amljpegenc_set_format (GstVideoEncoder * video_enc,
 {
   GstAmlJpegEnc *encoder = GST_AMLJPEGENC (video_enc);
   GstVideoInfo *info = &state->info;
-  GstCaps *template_caps;
-  GstCaps *allowed_caps = NULL;
-  const gchar* allowed_mime_name = NULL;
 
   if (encoder->handle != 0) {
     GstVideoInfo *old = &encoder->input_state->info;
@@ -307,9 +304,7 @@ static gboolean
 gst_amljpegenc_set_src_caps (GstAmlJpegEnc * encoder, GstCaps * caps)
 {
   GstCaps *outcaps;
-  GstStructure *structure;
   GstVideoCodecState *state;
-  GstTagList *tags;
   const gchar* mime_str = "image/jpeg";
   outcaps = gst_caps_new_empty_simple (mime_str);
   state = gst_video_encoder_set_output_state (GST_VIDEO_ENCODER (encoder),
@@ -378,11 +373,13 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
   GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
  /* match the iformat */
   switch ( GST_VIDEO_INFO_FORMAT(info) ) {
-    case GST_VIDEO_FORMAT_RGB || GST_VIDEO_FORMAT_BGR:
+    case GST_VIDEO_FORMAT_RGB:
+    case GST_VIDEO_FORMAT_BGR:
+        iformat = FMT_NV12 ;
     /*
      For the rgb format,need convert to NV12 via ge2d.
      new imageproc handle when RGB case.
-  */
+    */
         encoder->imgproc.handle = imgproc_init();
     if (encoder->imgproc.handle == NULL) {
         GST_ELEMENT_ERROR (encoder, STREAM, ENCODE,
@@ -409,7 +406,7 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
         break;
 
     default:
-        GST_DEBUG_OBJECT (encoder, "no NV12/YUY2/RGB/BGR iformat");
+        GST_DEBUG_OBJECT (encoder, "no NV12/NV21/YUY2/RGB/BGR iformat");
         break;
    }
 
@@ -419,7 +416,8 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
     GST_DEBUG_OBJECT (encoder,"mem_type=%d",mem_type);
     gst_memory_unref(memory);
   }  else {
-    mem_type = JPEGENC_LOCAL_BUFF;
+    mem_type = JPEGENC_DMA_BUFF;
+
     GST_DEBUG_OBJECT (encoder,"mem_type=%d",mem_type);
     gst_memory_unref(memory);
     /*
@@ -469,14 +467,18 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
     fd = encoder->imgproc.output.fd;
     outbuf.fd = fd;
     outbuf.is_ionbuf = TRUE;
-    struct imgproc_pos inpos = {
+    GST_DEBUG_OBJECT (encoder,"fd=%d",fd);
+
+    struct imgproc_pos in_pos = {
         0, 0, info->width, info->height, info->width, info->height};
-    struct imgproc_pos outpos = {
+    struct imgproc_pos out_pos = {
         0, 0, info->width, info->height, info->width, info->height};
 
-    imgproc_crop(encoder->imgproc.handle, inbuf, inpos,
-                      GST_VIDEO_INFO_FORMAT(info), outbuf, outpos,
+    imgproc_crop(encoder->imgproc.handle, inbuf, in_pos,
+                      GST_VIDEO_INFO_FORMAT(info), outbuf, out_pos,
                       GST_VIDEO_FORMAT_NV12);
+
+    GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
   }
     /*
       if want to see the parameters,please release the log.
@@ -504,7 +506,6 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
     gst_video_codec_frame_unref (frame);
   }
 
-  //frame = gst_video_encoder_get_frame (GST_VIDEO_ENCODER (encoder), input_frame->system_frame_number);
   frame = gst_video_encoder_get_oldest_frame (GST_VIDEO_ENCODER (encoder));
   if (!frame) {
     gst_video_codec_frame_unref (frame);
@@ -525,7 +526,8 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
 
   GST_DEBUG_OBJECT (encoder, "Output keyframe");
   GST_VIDEO_CODEC_FRAME_SET_SYNC_POINT (frame);
-    return gst_video_encoder_finish_frame ( GST_VIDEO_ENCODER(encoder), frame);
+
+  return gst_video_encoder_finish_frame ( GST_VIDEO_ENCODER(encoder), frame);
 }
 
 static gboolean
