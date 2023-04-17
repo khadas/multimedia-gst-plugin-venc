@@ -766,7 +766,7 @@ static void
 gst_amlh265venc_close_encoder (GstAmlH265VEnc * encoder)
 {
   if (encoder->codec.handle != 0) {
-    vl_video_encoder_destory(encoder->codec.handle);
+    vl_video_encoder_destroy(encoder->codec.handle);
     encoder->codec.handle = 0;
   }
   if (encoder->imgproc.handle) {
