@@ -16,7 +16,7 @@ CFLAGS = -Wall -Wextra -fPIC
 CFLAGS += $(shell $(PKG_CONFIG) --cflags gstreamer-1.0 gstreamer-base-1.0 gstreamer-allocators-1.0 gstreamer-video-1.0)
 LDFLAGS += $(shell $(PKG_CONFIG) --libs gstreamer-1.0 gstreamer-base-1.0 gstreamer-allocators-1.0 gstreamer-video-1.0)
 
-LDFLAGS += -L$(STAGING_DIR)/usr/lib/ -lion -lvpcodec
+LDFLAGS += -L$(STAGING_DIR)/usr/lib/ -lion -lvpcodec -lgstdrmbufferpool -lgstdrmallocator
 CFLAGS += \
 	-I$(STAGING_DIR)/usr/include/ \
     -I$(LOCAL_PATH)/../common/

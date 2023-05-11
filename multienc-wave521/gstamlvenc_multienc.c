@@ -23,6 +23,7 @@
 
 //#include <gmodule.h>
 //#include <gst/allocators/gstamlionallocator.h>
+#include <gst/gstdrmbufferpool.h>
 #include <gst/allocators/gstdmabuf.h>
 #include <gst/gst.h>
 #include <gst/pbutils/pbutils.h>
@@ -92,6 +93,8 @@ gst_amlvenc_add_v_chroma_format (GstAmlVEnc *encoder, GstStructure * s)
 #define PROP_ROI_X_DEFAULT 0.00
 #define PROP_ROI_Y_DEFAULT 0.00
 #define PROP_ROI_QUALITY_DEFAULT 51
+#define DRMBP_EXTRA_BUF_SIZE_FOR_DISPLAY 1
+#define DRMBP_LIMIT_MAX_BUFSIZE_TO_BUFSIZE 1
 
 enum
 {
@@ -1016,21 +1019,25 @@ gst_amlvenc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
 {
   GstAmlVEnc *self = GST_AMLVENC (encoder);
   GstVideoInfo *info;
-  guint size, min = 0, max = 0;
+  // guint size, min = 0, max = 0;
+  GstCaps *caps;
+  GstBufferPool *pool = NULL;
+  gboolean need_pool;
 
-  gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
+  gst_query_parse_allocation(query, &caps, &need_pool);
+  GST_DEBUG_OBJECT(encoder, "need_pool: %d", need_pool);
 
   if (!self->input_state)
     return FALSE;
 
   info = &self->input_state->info;
-  if (gst_query_get_n_allocation_pools (query) > 0) {
-    gst_query_parse_nth_allocation_pool (query, 0, NULL, &size, &min, &max);
-    size = MAX (size, info->size);
-    gst_query_set_nth_allocation_pool (query, 0, NULL, size, self->min_buffers, self->max_buffers);
-  } else {
-    gst_query_add_allocation_pool (query, NULL, info->size, self->min_buffers, self->max_buffers);
-  }
+  // if (gst_query_get_n_allocation_pools (query) > 0) {
+  //   gst_query_parse_nth_allocation_pool (query, 0, NULL, &size, &min, &max);
+  //   size = MAX (size, info->size);
+  //   gst_query_set_nth_allocation_pool (query, 0, NULL, size, self->min_buffers, self->max_buffers);
+  // } else {
+  //   gst_query_add_allocation_pool (query, NULL, info->size, self->min_buffers, self->max_buffers);
+  // }
 
  if (self->b_enable_dmallocator) {
     GstAllocator *allocator = NULL;
@@ -1055,6 +1062,16 @@ gst_amlvenc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
       gst_object_unref (allocator);
   }
 
+  if (need_pool)
+      pool = gst_drm_bufferpool_new(FALSE, GST_DRM_BUFFERPOOL_TYPE_VIDEO_PLANE);
+      GST_DEBUG_OBJECT(encoder, "new gst_drm_bufferpool");
+
+  gst_query_add_allocation_pool(query, pool, info->size, DRMBP_EXTRA_BUF_SIZE_FOR_DISPLAY, DRMBP_LIMIT_MAX_BUFSIZE_TO_BUFSIZE);
+  GST_DEBUG_OBJECT(encoder, "info->size: %d", info->size);
+  if (pool)
+      g_object_unref(pool);
+
+  gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
   return GST_VIDEO_ENCODER_CLASS (parent_class)->propose_allocation (encoder,
       query);
 }
