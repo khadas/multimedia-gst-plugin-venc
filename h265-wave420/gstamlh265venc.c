@@ -1000,25 +1000,59 @@ gst_amlh265venc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
 {
   GstAmlH265VEnc *self = GST_AMLH265VENC (encoder);
   GstVideoInfo *info;
-  // guint size, min = 0, max = 0;
+  guint size, min = 0, max = 0;
   GstCaps *caps;
   GstBufferPool *pool = NULL;
-  gboolean need_pool;
-
-  gst_query_parse_allocation(query, &caps, &need_pool);
-  GST_DEBUG_OBJECT(encoder, "need_pool: %d", need_pool);
+  gboolean need_pool = FALSE;
 
   if (!self->input_state)
     return FALSE;
 
   info = &self->input_state->info;
-  // if (gst_query_get_n_allocation_pools (query) > 0) {
-  //   gst_query_parse_nth_allocation_pool (query, 0, NULL, &size, &min, &max);
-  //   size = MAX (size, info->size);
-  //   gst_query_set_nth_allocation_pool (query, 0, NULL, size, self->min_buffers, self->max_buffers);
-  // } else {
-  //   gst_query_add_allocation_pool (query, NULL, info->size, self->min_buffers, self->max_buffers);
-  // }
+
+  if (info) {
+      switch (GST_VIDEO_INFO_FORMAT(info)) {
+      case GST_VIDEO_FORMAT_NV12:
+      case GST_VIDEO_FORMAT_NV21:
+          {
+            GST_DEBUG_OBJECT(encoder, "choose gst_drm_bufferpool");
+            gst_query_parse_allocation(query, &caps, &need_pool);
+            GST_DEBUG_OBJECT(encoder, "need_pool: %d", need_pool);
+
+              if (need_pool) {
+                      pool = gst_drm_bufferpool_new(FALSE, GST_DRM_BUFFERPOOL_TYPE_VIDEO_PLANE);
+                      GST_DEBUG_OBJECT(encoder, "new gst_drm_bufferpool");
+                  }
+
+              gst_query_add_allocation_pool(query, pool, info->size, DRMBP_EXTRA_BUF_SIZE_FOR_DISPLAY, DRMBP_LIMIT_MAX_BUFSIZE_TO_BUFSIZE);
+              GST_DEBUG_OBJECT(encoder, "info->size: %d", info->size);
+                      if (pool)
+                      g_object_unref(pool);
+
+              gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
+
+          break;
+          }
+      default: //hanle not NV12/NV21
+          {
+            GST_DEBUG_OBJECT(encoder, "choose fake bufferpool");
+            if (gst_query_get_n_allocation_pools (query) > 0) {
+              gst_query_parse_nth_allocation_pool (query, 0, NULL, &size, &min, &max);
+              size = MAX (size, info->size);
+              gst_query_set_nth_allocation_pool (query, 0, NULL, size, self->min_buffers, self->max_buffers);
+            } else {
+              gst_query_add_allocation_pool (query, NULL, info->size, self->min_buffers, self->max_buffers);
+              GST_DEBUG_OBJECT(encoder, "info->size: %d", info->size);
+            }
+
+              gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
+          break;
+          }
+      }
+  } else {
+        GST_DEBUG_OBJECT(encoder, "can not get videoinfo");
+        return FALSE;
+  }
 
  if (self->b_enable_dmallocator) {
     GstAllocator *allocator = NULL;
@@ -1043,16 +1077,6 @@ gst_amlh265venc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
       gst_object_unref (allocator);
   }
 
-  if (need_pool)
-      pool = gst_drm_bufferpool_new(FALSE, GST_DRM_BUFFERPOOL_TYPE_VIDEO_PLANE);
-      GST_DEBUG_OBJECT(encoder, "new gst_drm_bufferpool");
-
-  gst_query_add_allocation_pool(query, pool, info->size, DRMBP_EXTRA_BUF_SIZE_FOR_DISPLAY, DRMBP_LIMIT_MAX_BUFSIZE_TO_BUFSIZE);
-  GST_DEBUG_OBJECT(encoder, "info->size: %d", info->size);
-  if (pool)
-      g_object_unref(pool);
-
-  gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
   return GST_VIDEO_ENCODER_CLASS (parent_class)->propose_allocation (encoder,
       query);
 }
