@@ -37,6 +37,7 @@
 #include "imgproc.h"
 
 #include "gstamlionallocator.h"
+#include <stdio.h>
 
 GST_DEBUG_CATEGORY_STATIC (gst_amlh264venc_debug);
 #define GST_CAT_DEFAULT gst_amlh264venc_debug
@@ -490,6 +491,9 @@ gst_amlh264venc_init (GstAmlH264VEnc * encoder)
   encoder->roi.enabled = PROP_ROI_ENABLED_DEFAULT;
   encoder->roi.id = PROP_ROI_ID_DEFAULT;
   encoder->roi.buffer_info.data = NULL;
+  encoder->fd[0] = -1;
+  encoder->fd[1] = -1;
+  encoder->fd[2] = -1;
 
   encoder->u4_first_pts_index = 0;
   encoder->b_enable_dmallocator = FALSE;
@@ -1106,6 +1110,7 @@ gst_amlh264venc_encode_frame (GstAmlH264VEnc * encoder,
   GstVideoInfo *info = &encoder->input_state->info;
   GstMapInfo map;
   vl_dma_info_t s_dma_info;
+  guint8 ui1_plane_num = 1;
   gint i4_encoder_buf_len = -1;
   guint8 i1_format = 0;
 
@@ -1128,14 +1133,40 @@ gst_amlh264venc_encode_frame (GstAmlH264VEnc * encoder,
   gboolean is_dmabuf = gst_is_dmabuf_memory(memory);
   gint fd = -1;
   GstMapInfo minfo;
-  GST_DEBUG_OBJECT(encoder, "is_dmabuf[%d]",is_dmabuf);
+  GST_DEBUG_OBJECT(encoder, "is_dmabuf[%d] width[%d] height[%d]",is_dmabuf,info->width,info->height);
 
   if (is_dmabuf) {
-    fd = gst_dmabuf_memory_get_fd(memory);
-    gst_memory_unref(memory);
+      switch (GST_VIDEO_INFO_FORMAT(info)) {
+      case GST_VIDEO_FORMAT_NV12:
+      case GST_VIDEO_FORMAT_NV21:
+          {
+          /* handle dma case scenario media convet encoder/hdmi rx encoder scenario*/
+          encoder->fd[0] = gst_dmabuf_memory_get_fd(memory);
+          gst_memory_unref(memory);
+          GstMemory *memory_uv = gst_buffer_get_memory(frame->input_buffer, 1);
+          encoder->fd[1] = gst_dmabuf_memory_get_fd(memory_uv);
+          gst_memory_unref(memory_uv);
+          ui1_plane_num = 2;
+          break;
+          }
+      default: //hanle I420/YV12/RGB
+        {
+          /*
+              Currently,For 420sp and RGB case,use one plane.
+              420sp for usb camera case,usb camera y/u/v address is continuous and no alignment requiremnet.
+              Therefore,use one plane.
+          */
+          encoder->fd[0] = gst_dmabuf_memory_get_fd(memory);
+          gst_memory_unref(memory);
+          ui1_plane_num = 1;
+          break;
+        }
+      }
   } else {
     gst_memory_unref(memory);
-
+    /*
+      non dmabuf case,due to encoder driver only handle dmabuf,so need convert to dma buffer case below.
+     */
     if (encoder->imgproc.input.memory == NULL) {
       encoder->imgproc.input.memory =
         gst_allocator_alloc(encoder->dmabuf_alloc, info->size, NULL);
@@ -1150,15 +1181,15 @@ gst_amlh264venc_encode_frame (GstAmlH264VEnc * encoder,
     fd = encoder->imgproc.input.fd;
     if (gst_memory_map(memory, &minfo, GST_MAP_WRITE)) {
       GstVideoFrame video_frame;
-
       gst_video_frame_map(&video_frame, info, frame->input_buffer, GST_MAP_READ);
-      guint8 *pixel = GST_VIDEO_FRAME_PLANE_DATA (&video_frame, 0);
 
+      guint8 *pixel = GST_VIDEO_FRAME_PLANE_DATA (&video_frame, 0);
       memcpy(minfo.data, pixel, info->size);
 
       gst_video_frame_unmap (&video_frame);
       gst_memory_unmap(memory, &minfo);
     }
+    encoder->fd[0] = fd;
   }
 
   if (encoder->imgproc.handle) {
@@ -1194,12 +1225,14 @@ gst_amlh264venc_encode_frame (GstAmlH264VEnc * encoder,
     imgproc_crop(encoder->imgproc.handle, inbuf, inpos,
                       GST_VIDEO_INFO_FORMAT(info), outbuf, outpos,
                       GST_VIDEO_FORMAT_NV12);
+
+      encoder->fd[0] = fd;
   }
 
-  s_dma_info.num_planes = 1;
-  s_dma_info.shared_fd[0] = fd;
-  s_dma_info.shared_fd[1] = -1;
-  s_dma_info.shared_fd[2] = -1;
+  s_dma_info.num_planes = ui1_plane_num;
+  s_dma_info.shared_fd[0] = encoder->fd[0];
+  s_dma_info.shared_fd[1] = encoder->fd[1];
+  s_dma_info.shared_fd[2] = encoder->fd[2];
 
   switch (GST_VIDEO_INFO_FORMAT(info)) {
   case GST_VIDEO_FORMAT_NV12:

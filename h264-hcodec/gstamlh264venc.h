@@ -94,6 +94,7 @@ struct _GstAmlH264VEnc
   GstAllocator *dmabuf_alloc;
 
   /* properties */
+  gint fd[3];
   gint gop;
   gint framerate;
   guint bitrate;
