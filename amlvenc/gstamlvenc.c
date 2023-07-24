@@ -222,8 +222,8 @@ static amvenc_img_format_t img_format_convert (GstVideoFormat vfmt)
             break;
         case GST_VIDEO_FORMAT_I420:
         case GST_VIDEO_FORMAT_YV12:
-                fmt = AML_IMG_FMT_YUV420P;
-                break;
+            fmt = AML_IMG_FMT_YUV420P;
+            break;
         case GST_VIDEO_FORMAT_RGB:
             fmt = AML_IMG_FMT_RGB888;
             break;
@@ -1002,7 +1002,7 @@ static GstFlowReturn gst_amlvenc_encode_frame (GstAmlVEnc * encoder, GstVideoCod
             inbuf_info.buf_info.dma_info.shared_fd[0] = encoder->amlge2d.ge2dinfo.dst_info.shared_fd[0];
             inbuf_info.buf_info.dma_info.num_planes = ui1_plane_num;
             encoder->amlge2d.ge2dinfo.src_info[0].shared_fd[0] = -1;
-            GST_DEBUG_OBJECT(encoder, "Set DMA buffer index %d planes %d fd[%d]",
+            GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d]",
             inbuf_info.buf_info.dma_info.num_planes, inbuf_info.buf_info.dma_info.shared_fd[0]);
         } else
 #endif
@@ -1012,7 +1012,7 @@ static GstFlowReturn gst_amlvenc_encode_frame (GstAmlVEnc * encoder, GstVideoCod
             inbuf_info.buf_info.dma_info.shared_fd[1] = encoder->fd[1];
             inbuf_info.buf_info.dma_info.shared_fd[2] = encoder->fd[2];
             inbuf_info.buf_info.dma_info.num_planes = ui1_plane_num;
-            GST_DEBUG_OBJECT(encoder, "Set DMA buffer index %d planes %d fd[%d, %d, %d]",
+            GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d, %d, %d]",
             inbuf_info.buf_info.dma_info.num_planes, inbuf_info.buf_info.dma_info.shared_fd[0],
             inbuf_info.buf_info.dma_info.shared_fd[1], inbuf_info.buf_info.dma_info.shared_fd[2]);
         }
@@ -1051,7 +1051,7 @@ static GstFlowReturn gst_amlvenc_encode_frame (GstAmlVEnc * encoder, GstVideoCod
             inbuf_info.buf_type = AML_DMA_TYPE;
             inbuf_info.buf_info.dma_info.shared_fd[0] = encoder->amlge2d.ge2dinfo.dst_info.shared_fd[0];
             inbuf_info.buf_info.dma_info.num_planes = ui1_plane_num;
-            GST_DEBUG_OBJECT(encoder, "Set DMA buffer index %d planes %d fd[%d]",
+            GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d]",
             inbuf_info.buf_info.dma_info.num_planes, inbuf_info.buf_info.dma_info.shared_fd[0]);
             gst_video_frame_unmap (&video_frame);
         } else
