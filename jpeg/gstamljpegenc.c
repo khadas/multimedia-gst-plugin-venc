@@ -11,15 +11,15 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+#include <gst/gstdrmbufferpool.h>
 #include <gst/allocators/gstdmabuf.h>
 #include <gst/gst.h>
-#include "gstamljpegenc.h"
 #include <gst/video/video.h>
 #include <gst/video/gstvideometa.h>
 #include <gst/base/base.h>
 #include <gst/allocators/gstdmabuf.h>
-#include "../common/gstamlionallocator.h"
-#include "imgproc.h"
+
+#include "gstamljpegenc.h"
 
 #define PROP_IDR_PERIOD_DEFAULT 30
 #define PROP_FRAMERATE_DEFAULT 30
@@ -30,13 +30,6 @@
 #define PROP_ENCODER_BUFFER_SIZE_DEFAULT 2048
 #define PROP_ENCODER_BUFFER_SIZE_MIN 1024
 #define PROP_ENCODER_BUFFER_SIZE_MAX 4096
-#define PROP_ROI_ID_DEFAULT 0
-#define PROP_ROI_ENABLED_DEFAULT TRUE
-#define PROP_ROI_WIDTH_DEFAULT 0.00
-#define PROP_ROI_HEIGHT_DEFAULT 0.00
-#define PROP_ROI_X_DEFAULT 0.00
-#define PROP_ROI_Y_DEFAULT 0.00
-#define PROP_ROI_QUALITY_DEFAULT 50
 
 enum
 {
@@ -47,14 +40,6 @@ enum
   PROP_MIN_BUFFERS,
   PROP_MAX_BUFFERS,
   PROP_ENCODER_BUFSIZE,
-  PROP_ROI_ID,
-  PROP_ROI_ENABLED,
-  PROP_ROI_WIDTH,
-  PROP_ROI_HEIGHT,
-  PROP_ROI_X,
-  PROP_ROI_Y,
-  PROP_ROI_QUALITY,
-  PROD_ENABLE_DMALLOCATOR
 };
 
 GST_DEBUG_CATEGORY_STATIC (amljpegenc_debug);
@@ -62,7 +47,13 @@ GST_DEBUG_CATEGORY_STATIC (amljpegenc_debug);
 #define JPEG_DEFAULT_QUALITY 50
 #define JPEG_DEFAULT_SMOOTHING 0
 #define JPEG_DEFAULT_SNAPSHOT		FALSE
+#define PROP_MIN_BUFFERS_DEFAULT 2
+#define PROP_MAX_BUFFERS_DEFAULT 6
+
 #define ALIGNE_64(a) (((a + 63) >> 6) << 6)
+
+#define DRMBP_EXTRA_BUF_SIZE_FOR_DISPLAY 1
+#define DRMBP_LIMIT_MAX_BUFSIZE_TO_BUFSIZE 1
 
 /* JpegEnc signals and args */
 enum
@@ -98,6 +89,102 @@ static GstFlowReturn gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
 static gboolean gst_amljpegenc_propose_allocation (GstVideoEncoder * encoder,
     GstQuery * query);
 
+#if SUPPORT_SCALE
+static gint SRC1_PIXFORMAT = PIXEL_FORMAT_YCrCb_420_SP;
+static gint SRC2_PIXFORMAT = PIXEL_FORMAT_YCrCb_420_SP;
+static gint DST_PIXFORMAT = PIXEL_FORMAT_YCrCb_420_SP;
+
+static GE2DOP OP = AML_GE2D_STRETCHBLIT;
+
+#define g_align32(a)     ((((a)+31)>>5)<<5)
+
+static gint do_strechblit(aml_ge2d_info_t* pge2dinfo, GstVideoInfo *info)
+{
+    gint ret = -1;
+    pge2dinfo->src_info[0].memtype = GE2D_CANVAS_ALLOC;
+    pge2dinfo->dst_info.memtype = GE2D_CANVAS_ALLOC;
+    pge2dinfo->src_info[0].canvas_w = info->width;
+    pge2dinfo->src_info[0].canvas_h = info->height;
+    pge2dinfo->src_info[0].format = SRC1_PIXFORMAT;
+
+    pge2dinfo->dst_info.canvas_w = g_align32(info->width);
+    pge2dinfo->dst_info.canvas_h = info->height;
+    pge2dinfo->dst_info.format = DST_PIXFORMAT;
+
+    pge2dinfo->src_info[0].rect.x = 0;
+    pge2dinfo->src_info[0].rect.y = 0;
+    pge2dinfo->src_info[0].rect.w = info->width;
+    pge2dinfo->src_info[0].rect.h = info->height;
+    pge2dinfo->dst_info.rect.x = 0;
+    pge2dinfo->dst_info.rect.y = 0;
+    pge2dinfo->dst_info.rect.w = g_align32(info->width);
+    pge2dinfo->dst_info.rect.h = info->height;
+    pge2dinfo->dst_info.rotation = GE2D_ROTATION_0;
+    ret = aml_ge2d_process(pge2dinfo);
+    return ret;
+}
+
+static void set_ge2dinfo(aml_ge2d_info_t* pge2dinfo,
+                         GstVideoInfo *info)
+{
+    pge2dinfo->src_info[0].memtype = GE2D_CANVAS_ALLOC;
+    pge2dinfo->src_info[0].canvas_w = info->width;
+    pge2dinfo->src_info[0].canvas_h = info->height;
+    pge2dinfo->src_info[0].format = SRC1_PIXFORMAT;
+    pge2dinfo->src_info[1].memtype = GE2D_CANVAS_TYPE_INVALID;
+    pge2dinfo->src_info[1].canvas_w = 0;
+    pge2dinfo->src_info[1].canvas_h = 0;
+    pge2dinfo->src_info[1].format = SRC2_PIXFORMAT;
+    pge2dinfo->dst_info.memtype = GE2D_CANVAS_ALLOC;
+    pge2dinfo->dst_info.canvas_w = g_align32(info->width);
+    pge2dinfo->dst_info.canvas_h = info->height;
+    pge2dinfo->dst_info.format = DST_PIXFORMAT;
+    pge2dinfo->dst_info.rotation = GE2D_ROTATION_0;
+    pge2dinfo->offset = 0;
+    pge2dinfo->ge2d_op = OP;
+    pge2dinfo->blend_mode = BLEND_MODE_PREMULTIPLIED;
+}
+
+static gboolean ge2d_colorFormat(GstVideoFormat vfmt)
+{
+    switch (vfmt) {
+        case GST_VIDEO_FORMAT_BGR:
+            SRC1_PIXFORMAT = PIXEL_FORMAT_BGR_888;
+            SRC2_PIXFORMAT = PIXEL_FORMAT_BGR_888;
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#endif
+
+static enum jpegenc_frame_fmt_e img_format_convert (GstVideoFormat vfmt)
+{
+    enum jpegenc_frame_fmt_e fmt;
+    switch (vfmt) {
+        case GST_VIDEO_FORMAT_NV12:
+            fmt = FMT_NV12;
+            break;
+        case GST_VIDEO_FORMAT_NV21:
+            fmt = FMT_NV21;
+            break;
+        case GST_VIDEO_FORMAT_I420:
+        case GST_VIDEO_FORMAT_YV12:
+            fmt = FMT_YUV420;
+            break;
+        case GST_VIDEO_FORMAT_RGB:
+            fmt = FMT_RGB888;
+            break;
+        case GST_VIDEO_FORMAT_BGR:
+            fmt = FMT_NV21;
+            break;
+        default:
+            fmt = FMT_NV12;
+            break;
+    }
+    return fmt;
+}
+
 /* static guint gst_amljpegenc_signals[LAST_SIGNAL] = { 0 }; */
 
 #define gst_amljpegenc_parent_class parent_class
@@ -109,8 +196,8 @@ GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE
-        ("{ I420, YV12, YUY2, UYVY, Y41B, Y42B, YVYU, Y444, NV21, "
-         "NV12, RGB, BGR, RGBx, xRGB, BGRx, xBGR, GRAY8 }"))
+        ("{ NV12, NV21, I420, "
+         "YV12, RGB, BGR}"))
     );
 
 /* *INDENT-ON* */
@@ -192,12 +279,12 @@ static void
 gst_amljpegenc_init (GstAmlJpegEnc * encoder)
 {
   GST_PAD_SET_ACCEPT_TEMPLATE (GST_VIDEO_ENCODER_SINK_PAD (encoder));
-  encoder->width = PROP_ROI_WIDTH_DEFAULT;
-  encoder->height = PROP_ROI_HEIGHT_DEFAULT;
   encoder->quality = 50;
   encoder->smoothing = JPEG_DEFAULT_SMOOTHING;
   encoder->snapshot = JPEG_DEFAULT_SNAPSHOT;
   encoder->handle = 0;
+  encoder->max_buffers = PROP_MAX_BUFFERS_DEFAULT;
+  encoder->min_buffers = PROP_MIN_BUFFERS_DEFAULT;
   encoder->encoder_bufsize = PROP_ENCODER_BUFFER_SIZE_DEFAULT * 1024;
 }
 
@@ -214,12 +301,13 @@ gst_amljpegenc_close_encoder (GstAmlJpegEnc * encoder)
     jpegenc_destroy(encoder->handle);
     encoder->handle = 0;
   }
-
-  if (encoder->imgproc.handle) {
-    imgproc_deinit(encoder->imgproc.handle);
-    encoder->imgproc.handle = NULL;
-  }
-
+#if SUPPORT_SCALE
+    if (encoder->ge2d_initial_done) {
+        aml_ge2d_mem_free(&encoder->amlge2d);
+        aml_ge2d_exit(&encoder->amlge2d);
+        GST_DEBUG_OBJECT(encoder, "ge2d exit!!!");
+    }
+#endif
 }
 
 /*
@@ -248,6 +336,27 @@ gst_amljpegenc_init_encoder (GstAmlJpegEnc * encoder)
         ("Can not initialize v encoder."), (NULL));
     return FALSE;
   }
+#if SUPPORT_SCALE
+  if (GST_VIDEO_INFO_FORMAT(info) == GST_VIDEO_FORMAT_BGR) {
+      memset(&encoder->amlge2d,0x0,sizeof(aml_ge2d_t));
+      aml_ge2d_info_t *pge2dinfo = &encoder->amlge2d.ge2dinfo;
+      memset(pge2dinfo, 0, sizeof(aml_ge2d_info_t));
+      memset(&(pge2dinfo->src_info[0]), 0, sizeof(buffer_info_t));
+      memset(&(pge2dinfo->src_info[1]), 0, sizeof(buffer_info_t));
+      memset(&(pge2dinfo->dst_info), 0, sizeof(buffer_info_t));
+
+      set_ge2dinfo(pge2dinfo, info);
+
+      gint ret = aml_ge2d_init(&encoder->amlge2d);
+      if (ret < 0) {
+          GST_ELEMENT_ERROR (encoder, STREAM, ENCODE,
+              ("encode open ge2d failed"), (NULL));
+          return FALSE;
+      }
+      encoder->ge2d_initial_done = 1;
+      encoder->INIT_GE2D = TRUE;
+  }
+#endif
   return TRUE;
 }
 
@@ -294,7 +403,7 @@ gst_amljpegenc_set_format (GstVideoEncoder * video_enc,
      GST_DEBUG_OBJECT (encoder, "not init encoder");
      return FALSE;
    }
-     return TRUE;
+   return TRUE;
 }
 
 /* gst_amljpegenc_set_src_caps
@@ -343,11 +452,7 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
 {
   GstVideoInfo *info = &encoder->input_state->info;
   GstMapInfo map;
-  gint encode_data_len = -1;
-  int inbuf_info;
-  int retbuf_info;
-  int w_stride = (info->width % 8) == 0 ? info->width : (((info->width / 8)+1)*8);
-  int h_stride = (info->height % 8) == 0 ? info->height : (((info->height / 8)+1)*8);
+  guint8 ui1_plane_num = 1;
 
   if (G_UNLIKELY (encoder->handle == 0)) {
     if (frame)
@@ -363,138 +468,166 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
 
   GstMemory *memory = gst_buffer_get_memory(frame->input_buffer, 0);
   gboolean is_dmabuf = gst_is_dmabuf_memory(memory);
-  gint fd = -1;
-  GstMapInfo minfo;
-  GstVideoFrame video_frame;
-  guint8 *pixel = 1;
-  gint mem_type = JPEGENC_DMA_BUFF;
-  gint iformat = FMT_YUV420 ;
-  iformat = GST_VIDEO_INFO_FORMAT(info);
-  GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
- /* match the iformat */
-  switch ( GST_VIDEO_INFO_FORMAT(info) ) {
-    case GST_VIDEO_FORMAT_RGB:
-    case GST_VIDEO_FORMAT_BGR:
-        iformat = FMT_NV12 ;
-    /*
-     For the rgb format,need convert to NV12 via ge2d.
-     new imageproc handle when RGB case.
-    */
-        encoder->imgproc.handle = imgproc_init();
-    if (encoder->imgproc.handle == NULL) {
-        GST_ELEMENT_ERROR (encoder, STREAM, ENCODE,
-          ("Can not initialize imgproc."), (NULL));
-      return FALSE;
-    }
-        encoder->imgproc.outbuf_size = (info->width * info->height * 3) / 2;
-        GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-        break;
 
-    case GST_VIDEO_FORMAT_NV12:
-        iformat = FMT_NV12 ;
-        GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-        break;
+  GST_DEBUG_OBJECT(encoder, "is_dmabuf[%d] width[%d] height[%d]",is_dmabuf,info->width,info->height);
+  int width = 0;
+  int height = 0;
+  int w_stride = 0;
+  int h_stride = 0;
+  int quality = 0;
+  enum jpegenc_frame_fmt_e iformat = FMT_NV12;
+  enum jpegenc_frame_fmt_e oformat = 0;
+  enum jpegenc_mem_type_e mem_type = JPEGENC_LOCAL_BUFF;
+  int dma_fd = 0;
+  guint8 *pixel = NULL;
 
-    case GST_VIDEO_FORMAT_NV21:
-        iformat = FMT_NV21 ;
-        GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-        break;
+  iformat = img_format_convert(GST_VIDEO_INFO_FORMAT(info));
 
-    case GST_VIDEO_FORMAT_YUY2:
-        iformat = FMT_YUV422_SINGLE ;
-        GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-        break;
-
-    default:
-        GST_DEBUG_OBJECT (encoder, "no NV12/NV21/YUY2/RGB/BGR iformat");
-        break;
-   }
+#if SUPPORT_SCALE
+  if (GST_VIDEO_INFO_FORMAT(info) == GST_VIDEO_FORMAT_BGR) {
+      if (encoder->INIT_GE2D) {
+          if (ge2d_colorFormat(GST_VIDEO_INFO_FORMAT(info)) == TRUE) {
+              GST_DEBUG_OBJECT(encoder, "The color format that venc need ge2d to change!");
+          } else {
+              GST_DEBUG_OBJECT(encoder, "Encoder only not support fmt: %d", GST_VIDEO_INFO_FORMAT(info));
+              if (frame)
+                  gst_video_codec_frame_unref (frame);
+              return GST_FLOW_ERROR;
+          }
+      }
+  }
+#endif
 
   if (is_dmabuf) {
-    fd = gst_dmabuf_memory_get_fd(memory);
-    mem_type = JPEGENC_DMA_BUFF;
-    GST_DEBUG_OBJECT (encoder,"mem_type=%d",mem_type);
-    gst_memory_unref(memory);
-  }  else {
-    mem_type = JPEGENC_DMA_BUFF;
-
-    GST_DEBUG_OBJECT (encoder,"mem_type=%d",mem_type);
-    gst_memory_unref(memory);
-    /*
-      non dmabuf case,due to encoder driver only handle dmabuf,so need convert to dma buffer case below.
-     */
-    if (encoder->imgproc.input.memory == NULL) {
-      encoder->imgproc.input.memory =
-        gst_allocator_alloc(encoder->dmabuf_alloc, info->size, NULL);
-
-      if (encoder->imgproc.input.memory == NULL) {
-        return GST_FLOW_ERROR;
+      encoder->fd[0] = gst_dmabuf_memory_get_fd(memory);
+      gst_memory_unref(memory);
+      switch (GST_VIDEO_INFO_FORMAT(info)) {
+          case GST_VIDEO_FORMAT_NV12:
+          case GST_VIDEO_FORMAT_NV21:
+              {
+                  /* handle dma case scenario media convet encoder/hdmi rx encoder scenario*/
+                  GstMemory *memory_uv = gst_buffer_get_memory(frame->input_buffer, 1);
+                  encoder->fd[1] = gst_dmabuf_memory_get_fd(memory_uv);
+                  gst_memory_unref(memory_uv);
+                  ui1_plane_num = 2;
+                  break;
+              }
+          default: //hanle I420/YV12/RGB
+              {
+                  /*
+                  Currently,For 420sp and RGB case,use one plane.
+                  420sp for usb camera case,usb camera y/u/v address is continuous and no alignment requirement.
+                  Therefore,use one plane.
+                  */
+                  ui1_plane_num = 1;
+                  break;
+              }
       }
-      encoder->imgproc.input.fd = gst_dmabuf_memory_get_fd(encoder->imgproc.input.memory);
-    }
+#if SUPPORT_SCALE
+      if (GST_VIDEO_INFO_FORMAT(info) == GST_VIDEO_FORMAT_BGR) {
+          if (encoder->INIT_GE2D) {
+              encoder->INIT_GE2D = FALSE;
+              encoder->amlge2d.ge2dinfo.src_info[0].format = SRC1_PIXFORMAT;
+              encoder->amlge2d.ge2dinfo.src_info[1].format = SRC2_PIXFORMAT;
+              encoder->amlge2d.ge2dinfo.dst_info.plane_number = 1;
+              gint ret = aml_ge2d_mem_alloc(&encoder->amlge2d);
+              if (ret < 0) {
+                  GST_DEBUG_OBJECT(encoder, "encode ge2d mem alloc failed, ret=0x%x", ret);
+                  if (frame)
+                      gst_video_codec_frame_unref (frame);
+                  return GST_FLOW_ERROR;
+              }
+              GST_DEBUG_OBJECT(encoder, "ge2d init successful!");
+          }
+          encoder->amlge2d.ge2dinfo.src_info[0].shared_fd[0] = encoder->fd[0];
 
-    memory = encoder->imgproc.input.memory;
-    fd = encoder->imgproc.input.fd;
-    if (gst_memory_map(memory, &minfo, GST_MAP_WRITE)) {
+          do_strechblit(&encoder->amlge2d.ge2dinfo, info);
+          aml_ge2d_invalid_cache(&encoder->amlge2d.ge2dinfo);
+
+          ui1_plane_num = 1;
+          mem_type = JPEGENC_DMA_BUFF;
+          dma_fd = encoder->amlge2d.ge2dinfo.dst_info.shared_fd[0];
+          encoder->amlge2d.ge2dinfo.src_info[0].shared_fd[0] = -1;
+          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d]",
+          ui1_plane_num, dma_fd);
+      } else
+#endif
+      {
+          mem_type = JPEGENC_DMA_BUFF;
+          dma_fd = encoder->fd[0];
+          //inbuf_info.buf_info.dma_info.shared_fd[1] = encoder->fd[1];
+          //inbuf_info.buf_info.dma_info.shared_fd[2] = encoder->fd[2];
+          //inbuf_info.buf_info.dma_info.num_planes = ui1_plane_num;
+          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d, %d, %d]",
+          ui1_plane_num, encoder->fd[0],
+          encoder->fd[1], encoder->fd[2]);
+      }
+  } else {
+      gst_memory_unref(memory);
       GstVideoFrame video_frame;
       gst_video_frame_map(&video_frame, info, frame->input_buffer, GST_MAP_READ);
+
       pixel = GST_VIDEO_FRAME_PLANE_DATA (&video_frame, 0);
-      memcpy(minfo.data, pixel, info->size);
-      gst_video_frame_unmap (&video_frame);
-      gst_memory_unmap(memory, &minfo);
-    }
-  }
+#if SUPPORT_SCALE
+      if (GST_VIDEO_INFO_FORMAT(info) == GST_VIDEO_FORMAT_BGR) {
+          if (encoder->INIT_GE2D) {
+              encoder->INIT_GE2D = FALSE;
 
-  if (encoder->imgproc.handle) {
-    // format conversation needed
-    if (encoder->dmabuf_alloc == NULL) {
-      encoder->dmabuf_alloc = gst_amlion_allocator_obtain();
-    }
+              encoder->amlge2d.ge2dinfo.src_info[0].format = SRC1_PIXFORMAT;
+              encoder->amlge2d.ge2dinfo.src_info[1].format = SRC2_PIXFORMAT;
+              encoder->amlge2d.ge2dinfo.src_info[0].plane_number = 1;
+              encoder->amlge2d.ge2dinfo.dst_info.plane_number = 1;
+              gint ret = aml_ge2d_mem_alloc(&encoder->amlge2d);
+              if (ret < 0) {
+                  GST_DEBUG_OBJECT(encoder, "encode ge2d mem alloc failed, ret=0x%x", ret);
+              if (frame)
+                  gst_video_codec_frame_unref (frame);
+                  return GST_FLOW_ERROR;
+              }
+              GST_DEBUG_OBJECT(encoder, "ge2d init successful!");
+          }
 
-    struct imgproc_buf inbuf, outbuf;
-    inbuf.fd = fd;
-    inbuf.is_ionbuf = gst_is_amlionbuf_memory(memory);
+          if (GST_VIDEO_INFO_FORMAT(info) == GST_VIDEO_FORMAT_BGR) {
+              memcpy((void *)encoder->amlge2d.ge2dinfo.src_info[0].vaddr[0], (void *)pixel, info->size);
+          }
 
-    if (encoder->imgproc.output.memory == NULL) {
-      encoder->imgproc.output.memory = gst_allocator_alloc(
-          encoder->dmabuf_alloc, encoder->imgproc.outbuf_size, NULL);
-      if (encoder->imgproc.output.memory == NULL) {
-        return GST_FLOW_ERROR;
+          do_strechblit(&encoder->amlge2d.ge2dinfo, info);
+          aml_ge2d_invalid_cache(&encoder->amlge2d.ge2dinfo);
+          ui1_plane_num = 1;
+          mem_type = JPEGENC_DMA_BUFF;
+          dma_fd = encoder->amlge2d.ge2dinfo.dst_info.shared_fd[0];
+          //inbuf_info.buf_info.dma_info.num_planes = ui1_plane_num;
+          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d]",
+          ui1_plane_num, dma_fd);
+          gst_video_frame_unmap (&video_frame);
+      } else
+#endif
+      {
+          mem_type = JPEGENC_LOCAL_BUFF;
+          gst_video_frame_unmap (&video_frame);
       }
-      encoder->imgproc.output.fd = gst_dmabuf_memory_get_fd(encoder->imgproc.output.memory);
-    }
-
-    fd = encoder->imgproc.output.fd;
-    outbuf.fd = fd;
-    outbuf.is_ionbuf = TRUE;
-    GST_DEBUG_OBJECT (encoder,"fd=%d",fd);
-
-    struct imgproc_pos in_pos = {
-        0, 0, info->width, info->height, info->width, info->height};
-    struct imgproc_pos out_pos = {
-        0, 0, info->width, info->height, info->width, info->height};
-
-    imgproc_crop(encoder->imgproc.handle, inbuf, in_pos,
-                      GST_VIDEO_INFO_FORMAT(info), outbuf, out_pos,
-                      GST_VIDEO_FORMAT_NV12);
-
-    GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
   }
+
     /*
       if want to see the parameters,please release the log.
      */
-  GST_DEBUG_OBJECT (encoder,"info->width=%d",info->width);
-  GST_DEBUG_OBJECT (encoder,"info->height=%d",info->height);
+  width = info->width;
+  height = info->height;
+  w_stride = info->width;
+  h_stride = info->height;
+  quality = encoder->quality;
+
   GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
   GST_DEBUG_OBJECT (encoder,"mem_type=%d",mem_type);
-  GST_DEBUG_OBJECT (encoder,"fd=%d",fd);
-  GST_DEBUG_OBJECT (encoder,"pixel=%d",pixel);
-  int ret = jpegenc_encode(encoder->handle, info->width, info->height, w_stride, h_stride, encoder->quality, iformat, 0, mem_type, fd, pixel, encoder->outputbuf);
+  GST_DEBUG_OBJECT (encoder,"fd=%d",dma_fd);
+  GST_DEBUG_OBJECT (encoder,"pixel=0x%p",pixel);
+
+  int ret = jpegenc_encode(encoder->handle, width, height, w_stride, h_stride, quality, iformat, oformat, mem_type, dma_fd, pixel, encoder->outputbuf);
 
   if (0 == ret) {
     if (frame) {
       GST_ELEMENT_ERROR (encoder, STREAM, ENCODE, ("Encode v frame failed."),
-          ("gst_amlvencoder_encode return code=%d", encode_data_len));
+          ("gst_amlvencoder_encode return code=%d", ret));
       gst_video_codec_frame_unref (frame);
       return GST_FLOW_ERROR;
     } else {
@@ -533,9 +666,66 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
 static gboolean
 gst_amljpegenc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
 {
+  GstAmlJpegEnc *self = GST_AMLJPEGENC (encoder);
+  GstVideoInfo *info;
+  guint size, min = 0, max = 0;
+  GstCaps *caps;
+  GstBufferPool *pool = NULL;
+  gboolean need_pool = FALSE;
+
+  if (!self->input_state)
+    return FALSE;
+
+  info = &self->input_state->info;
+
+  if (info) {
+      switch (GST_VIDEO_INFO_FORMAT(info)) {
+      case GST_VIDEO_FORMAT_NV12:
+      case GST_VIDEO_FORMAT_NV21:
+          {
+            GST_DEBUG_OBJECT(encoder, "choose gst_drm_bufferpool");
+            gst_query_parse_allocation(query, &caps, &need_pool);
+            GST_DEBUG_OBJECT(encoder, "need_pool: %d", need_pool);
+
+              if (need_pool) {
+                      pool = gst_drm_bufferpool_new(FALSE, GST_DRM_BUFFERPOOL_TYPE_VIDEO_PLANE);
+                      GST_DEBUG_OBJECT(encoder, "new gst_drm_bufferpool");
+                  }
+
+              gst_query_add_allocation_pool(query, pool, info->size, DRMBP_EXTRA_BUF_SIZE_FOR_DISPLAY, DRMBP_LIMIT_MAX_BUFSIZE_TO_BUFSIZE);
+              GST_DEBUG_OBJECT(encoder, "info->size: %d", info->size);
+                      if (pool)
+                      g_object_unref(pool);
+
+              gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
+
+          break;
+          }
+      default: //hanle not NV12/NV21
+          {
+            GST_DEBUG_OBJECT(encoder, "choose fake bufferpool");
+            if (gst_query_get_n_allocation_pools (query) > 0) {
+              gst_query_parse_nth_allocation_pool (query, 0, NULL, &size, &min, &max);
+              size = MAX (size, info->size);
+              gst_query_set_nth_allocation_pool (query, 0, NULL, size, self->min_buffers, self->max_buffers);
+            } else {
+              gst_query_add_allocation_pool (query, NULL, info->size, self->min_buffers, self->max_buffers);
+              GST_DEBUG_OBJECT(encoder, "info->size: %d", info->size);
+            }
+
+              gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
+          break;
+          }
+      }
+  } else {
+        GST_DEBUG_OBJECT(encoder, "can not get videoinfo");
+        return FALSE;
+  }
+
   return GST_VIDEO_ENCODER_CLASS (parent_class)->propose_allocation (encoder,
       query);
 }
+
 
 static void
 gst_amljpegenc_set_property (GObject * object, guint prop_id,
@@ -598,15 +788,11 @@ gst_amljpegenc_start (GstAmlJpegEnc * encoder)
 {
   GstAmlJpegEnc *enc = (GstAmlJpegEnc *) encoder;
 
-  enc->dmabuf_alloc = gst_amlion_allocator_obtain();
-
   GST_DEBUG_OBJECT(encoder, "malloc out_buf");
 
 if (enc->outputbuf == NULL) {
     enc->outputbuf = g_new (guchar, enc->encoder_bufsize);
   }
-  enc->imgproc.input.memory = NULL;
-  enc->imgproc.output.memory = NULL;
   /* make sure that we have enough time for first DTS,
      this is probably overkill for most streams */
   gst_video_encoder_set_min_pts (encoder, GST_MSECOND * 30);
@@ -623,11 +809,6 @@ gst_amljpegenc_stop (GstAmlJpegEnc * encoder)
  if (enc->outputbuf) {
     g_free((gpointer)enc->outputbuf);
     enc->outputbuf = NULL;
-  }
-
-  if (enc->dmabuf_alloc) {
-    gst_object_unref(enc->dmabuf_alloc);
-    enc->dmabuf_alloc = NULL;
   }
 
   return TRUE;

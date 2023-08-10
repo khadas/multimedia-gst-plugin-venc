@@ -5,14 +5,13 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <gst/video/gstvideoencoder.h>
-/* this is a hack hack hack to get around jpeglib header bugs... */
-/*#include "gstamlionallocator.h"*/
-#ifdef HAVE_STDLIB_H
-# undef HAVE_STDLIB_H
-#endif
-#include <stdio.h>
+
 #include "jpegenc_api.h"
-#include "list.h"
+#define SUPPORT_SCALE 1
+
+#if SUPPORT_SCALE
+#include "aml_ge2d.h"
+#endif
 G_BEGIN_DECLS
 
 #define GST_TYPE_AMLJPEGENC \
@@ -34,7 +33,7 @@ struct _GstAmlJpegEnc
 {
   /*< private >*/
   GstVideoEncoder encoder;
-  GstVideoFrame current_vframe;
+  /*GstVideoFrame current_vframe;
   GstVideoCodecFrame *current_frame;
   GstFlowReturn res;
   gboolean input_caps_changed;
@@ -47,14 +46,14 @@ struct _GstAmlJpegEnc
   gint h_max_samp;
   gint v_max_samp;
   gboolean planar;
-  gint sof_marker;
+  gint sof_marker;*/
   /* the video buffer */
-  gint bufsize;
+  //gint bufsize;
   /* the jpeg line buffer */
-  guchar **line[3];
+  //guchar **line[3];
   /* indirect encoding line buffers */
   //guchar *row[3][4 * DCTSIZE];
-  guchar *row[3][4 * 2];
+  //guchar *row[3][4 * 2];
 
   /* properties */
   gint quality;
@@ -66,21 +65,16 @@ struct _GstAmlJpegEnc
   guint min_buffers;
   guint max_buffers;
   guint encoder_bufsize;
-  GstMemory *output_mem;
-  GstMapInfo output_map;
+  //GstMemory *output_mem;
+  //GstMapInfo output_map;
   guchar *outputbuf;
 
-  /*< private >*/
- struct imgproc_info {
-    void *handle;
-    gint outbuf_size;
-    struct {
-      GstMemory *memory;
-      gint fd;
-    } input, output;
-  } imgproc;
-
-  GstAllocator *dmabuf_alloc;
+#if SUPPORT_SCALE
+  guint ge2d_initial_done;
+  aml_ge2d_t amlge2d;
+  gboolean INIT_GE2D;
+#endif
+  gint fd[3];
 
   /* input description */
   GstVideoCodecState *input_state;
