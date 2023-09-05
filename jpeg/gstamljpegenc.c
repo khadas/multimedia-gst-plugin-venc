@@ -158,9 +158,9 @@ static gboolean ge2d_colorFormat(GstVideoFormat vfmt)
 }
 #endif
 
-static enum jpegenc_frame_fmt_e img_format_convert (GstVideoFormat vfmt)
+static jpegenc_frame_fmt_e img_format_convert (GstVideoFormat vfmt)
 {
-    enum jpegenc_frame_fmt_e fmt;
+    jpegenc_frame_fmt_e fmt;
     switch (vfmt) {
         case GST_VIDEO_FORMAT_NV12:
             fmt = FMT_NV12;
@@ -470,18 +470,13 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
   gboolean is_dmabuf = gst_is_dmabuf_memory(memory);
 
   GST_DEBUG_OBJECT(encoder, "is_dmabuf[%d] width[%d] height[%d]",is_dmabuf,info->width,info->height);
-  int width = 0;
-  int height = 0;
-  int w_stride = 0;
-  int h_stride = 0;
-  int quality = 0;
-  enum jpegenc_frame_fmt_e iformat = FMT_NV12;
-  enum jpegenc_frame_fmt_e oformat = 0;
-  enum jpegenc_mem_type_e mem_type = JPEGENC_LOCAL_BUFF;
-  int dma_fd = 0;
   guint8 *pixel = NULL;
+  int datalen = 0;
+  jpegenc_result_e result = ENC_FAILED;
+  jpegenc_frame_info_t frame_info;
 
-  iformat = img_format_convert(GST_VIDEO_INFO_FORMAT(info));
+  memset(&frame_info, 0, sizeof(frame_info));
+  frame_info.iformat = img_format_convert(GST_VIDEO_INFO_FORMAT(info));
 
 #if SUPPORT_SCALE
   if (GST_VIDEO_INFO_FORMAT(info) == GST_VIDEO_FORMAT_BGR) {
@@ -545,22 +540,23 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
           aml_ge2d_invalid_cache(&encoder->amlge2d.ge2dinfo);
 
           ui1_plane_num = 1;
-          mem_type = JPEGENC_DMA_BUFF;
-          dma_fd = encoder->amlge2d.ge2dinfo.dst_info.shared_fd[0];
+          frame_info.mem_type = JPEGENC_DMA_BUFF;
+          frame_info.YCbCr[0] = encoder->amlge2d.ge2dinfo.dst_info.shared_fd[0];
+          frame_info.plane_num = ui1_plane_num;
           encoder->amlge2d.ge2dinfo.src_info[0].shared_fd[0] = -1;
-          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d]",
-          ui1_plane_num, dma_fd);
+          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[0x%lx]",
+              frame_info.plane_num, frame_info.YCbCr[0]);
       } else
 #endif
       {
-          mem_type = JPEGENC_DMA_BUFF;
-          dma_fd = encoder->fd[0];
-          //inbuf_info.buf_info.dma_info.shared_fd[1] = encoder->fd[1];
-          //inbuf_info.buf_info.dma_info.shared_fd[2] = encoder->fd[2];
-          //inbuf_info.buf_info.dma_info.num_planes = ui1_plane_num;
-          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d, %d, %d]",
-          ui1_plane_num, encoder->fd[0],
-          encoder->fd[1], encoder->fd[2]);
+          frame_info.mem_type = JPEGENC_DMA_BUFF;
+          frame_info.YCbCr[0] = encoder->fd[0];
+          frame_info.YCbCr[1] = encoder->fd[1];
+          frame_info.YCbCr[2] = encoder->fd[2];
+          frame_info.plane_num = ui1_plane_num;
+          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[0x%lx, 0x%lx, 0x%lx]",
+              frame_info.plane_num, frame_info.YCbCr[0],
+              frame_info.YCbCr[1], frame_info.YCbCr[2]);
       }
   } else {
       gst_memory_unref(memory);
@@ -594,16 +590,17 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
           do_strechblit(&encoder->amlge2d.ge2dinfo, info);
           aml_ge2d_invalid_cache(&encoder->amlge2d.ge2dinfo);
           ui1_plane_num = 1;
-          mem_type = JPEGENC_DMA_BUFF;
-          dma_fd = encoder->amlge2d.ge2dinfo.dst_info.shared_fd[0];
-          //inbuf_info.buf_info.dma_info.num_planes = ui1_plane_num;
-          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[%d]",
-          ui1_plane_num, dma_fd);
+          frame_info.mem_type = JPEGENC_DMA_BUFF;
+          frame_info.YCbCr[0] = encoder->amlge2d.ge2dinfo.dst_info.shared_fd[0];
+          frame_info.plane_num = ui1_plane_num;
+          GST_DEBUG_OBJECT(encoder, "Set DMA buffer planes %d fd[0x%lx]",
+          frame_info.plane_num, frame_info.YCbCr[0]);
           gst_video_frame_unmap (&video_frame);
       } else
 #endif
       {
-          mem_type = JPEGENC_LOCAL_BUFF;
+          frame_info.YCbCr[0] = (ulong) (pixel);
+          frame_info.mem_type = JPEGENC_LOCAL_BUFF;
           gst_video_frame_unmap (&video_frame);
       }
   }
@@ -611,23 +608,23 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
     /*
       if want to see the parameters,please release the log.
      */
-  width = info->width;
-  height = info->height;
-  w_stride = info->width;
-  h_stride = info->height;
-  quality = encoder->quality;
+  frame_info.width = info->width;
+  frame_info.height = info->height;
+  frame_info.w_stride = info->width;
+  frame_info.h_stride = info->height;
+  frame_info.quality = encoder->quality;
+  frame_info.oformat = 0;
 
-  GST_DEBUG_OBJECT (encoder,"iformat=%d",iformat);
-  GST_DEBUG_OBJECT (encoder,"mem_type=%d",mem_type);
-  GST_DEBUG_OBJECT (encoder,"fd=%d",dma_fd);
+  GST_DEBUG_OBJECT (encoder,"iformat=%d",frame_info.iformat);
+  GST_DEBUG_OBJECT (encoder,"mem_type=%d",frame_info.mem_type);
   GST_DEBUG_OBJECT (encoder,"pixel=0x%p",pixel);
 
-  int ret = jpegenc_encode(encoder->handle, width, height, w_stride, h_stride, quality, iformat, oformat, mem_type, dma_fd, pixel, encoder->outputbuf);
+  result = jpegenc_encode(encoder->handle, frame_info, encoder->outputbuf, &datalen);
 
-  if (0 == ret) {
+  if (result == ENC_FAILED) {
     if (frame) {
       GST_ELEMENT_ERROR (encoder, STREAM, ENCODE, ("Encode v frame failed."),
-          ("gst_amlvencoder_encode return code=%d", ret));
+          ("gst_amlvencoder_encode return code=%d", result));
       gst_video_codec_frame_unref (frame);
       return GST_FLOW_ERROR;
     } else {
@@ -646,9 +643,9 @@ gst_amljpegenc_encode_frame (GstAmlJpegEnc * encoder,
   }
 
   frame->output_buffer = gst_video_encoder_allocate_output_buffer(
-      GST_VIDEO_ENCODER(encoder), ret);
+      GST_VIDEO_ENCODER(encoder), datalen);
   gst_buffer_map(frame->output_buffer, &map, GST_MAP_WRITE);
-  memcpy (map.data, encoder->outputbuf, ret);
+  memcpy (map.data, encoder->outputbuf, datalen);
   gst_buffer_unmap (frame->output_buffer, &map);
 
   frame->dts = frame->pts;
