@@ -178,6 +178,9 @@ static jpegenc_frame_fmt_e img_format_convert (GstVideoFormat vfmt)
         case GST_VIDEO_FORMAT_BGR:
             fmt = FMT_NV21;
             break;
+        case GST_VIDEO_FORMAT_YUY2:
+            fmt = FMT_YUV422_SINGLE;
+            break;
         default:
             fmt = FMT_NV12;
             break;
@@ -197,7 +200,7 @@ GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE
         ("{ NV12, NV21, I420, "
-         "YV12, RGB, BGR}"))
+         "YV12, YUY2, RGB, BGR}"))
     );
 
 /* *INDENT-ON* */
