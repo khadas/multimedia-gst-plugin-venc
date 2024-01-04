@@ -954,30 +954,22 @@ static GstFlowReturn gst_amlvenc_encode_frame (GstAmlVEnc * encoder, GstVideoCod
     if (is_dmabuf) {
         encoder->fd[0] = gst_dmabuf_memory_get_fd(memory);
         gst_memory_unref(memory);
-        ui1_plane_num = 1;
-        switch (GST_VIDEO_INFO_FORMAT(info)) {
-            case GST_VIDEO_FORMAT_NV12:
-            case GST_VIDEO_FORMAT_NV21:
-                {
-                    /* handle dma case scenario media convet encoder/hdmi rx encoder scenario*/
-                    GstMemory *memory_uv = gst_buffer_get_memory(frame->input_buffer, 1);
-                    if (gst_is_dmabuf_memory(memory_uv)) {
-                        encoder->fd[1] = gst_dmabuf_memory_get_fd(memory_uv);
-                        gst_memory_unref(memory_uv);
-                        ui1_plane_num = 2;
-                    }
-                    break;
-                }
-            default: //hanle I420/YV12/RGB
-                {
-                    /*
-                    Currently,For 420sp and RGB case,use one plane.
-                    420sp for usb camera case,usb camera y/u/v address is continuous and no alignment requirement.
-                    Therefore,use one plane.
-                    */
-                    break;
-                }
+        ui1_plane_num = gst_buffer_n_memory(frame->input_buffer);
+        if (ui1_plane_num > 1) {
+            GstMemory *memory_u = gst_buffer_get_memory(frame->input_buffer, 1);
+            if (gst_is_dmabuf_memory(memory_u)) {
+                encoder->fd[1] = gst_dmabuf_memory_get_fd(memory_u);
+                gst_memory_unref(memory_u);
+            }
         }
+        if (ui1_plane_num > 2) {
+            GstMemory *memory_v = gst_buffer_get_memory(frame->input_buffer, 2);
+            if (gst_is_dmabuf_memory(memory_v)) {
+                encoder->fd[2] = gst_dmabuf_memory_get_fd(memory_v);
+                gst_memory_unref(memory_v);
+            }
+        }
+
 #if SUPPORT_SCALE
         if (GST_VIDEO_INFO_FORMAT(info) == GST_VIDEO_FORMAT_BGR) {
             if (encoder->INIT_GE2D) {
