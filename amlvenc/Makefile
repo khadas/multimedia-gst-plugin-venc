@@ -5,6 +5,8 @@
 
 TARGET = libgstamlvenc.so
 
+OUT_DIR ?= .
+$(info "OUT_DIR : $(OUT_DIR)")
 
 LOCAL_PATH := $(shell pwd)
 SRCS = $(wildcard *.c)
@@ -25,19 +27,19 @@ CFLAGS += \
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $^ $(LDFLAGS) -shared -o $@
+	$(CC) $(patsubst %, $(OUT_DIR)/%, $^) $(LDFLAGS) -shared -Wl,-soname,$(TARGET) -o $(OUT_DIR)/$@
 
 %.o: %.c
-	$(CC) -c $(CFLAGS) $^ -o $@
+	$(CC) -c $(CFLAGS) $^ -o $(OUT_DIR)/$@
 
 .PHONY: clean install uninstall
 
 clean:
-	rm -f $(OBJS)
-	rm -f $(TARGET)
+	rm -f $(patsubst %, $(OUT_DIR)/%, $(OBJS))
+	rm -f $(OUT_DIR)/$(TARGET)
 
 install:
-	cp $(TARGET) $(TARGET_DIR)/usr/lib/gstreamer-1.0/
+	cp $(OUT_DIR)/$(TARGET) $(TARGET_DIR)/usr/lib/gstreamer-1.0/
 
 uninstall:
 	rm $(TARGET_DIR)/usr/lib/gstreamer-1.0/$(TARGET)
